@@ -698,4 +698,54 @@ impl LlamaContextParams {
     pub fn kv_unified(&self) -> bool {
         self.context_params.kv_unified
     }
+
+    /// Install a ggml scheduler evaluation callback.
+    ///
+    /// The callback is invoked by the ggml backend scheduler for each tensor
+    /// node in the computation graph, which makes per-layer activations
+    /// (residual stream, attention and MLP outputs) reachable during
+    /// evaluation. It is the same hook llama.cpp's own tooling uses for
+    /// activation capture.
+    ///
+    /// It is called twice per node: first with `ask = true`, where returning
+    /// `true` requests the node's data, and then with `ask = false` carrying
+    /// that data. Returning `false` for the second call aborts graph
+    /// evaluation. Tensor data lives in backend memory, so it must be read
+    /// with `ggml_backend_tensor_get` rather than dereferenced directly.
+    ///
+    /// # Safety
+    ///
+    /// `user_data` must remain valid and safe to access for the entire
+    /// lifetime of any context built from these parameters, and the callback
+    /// may run on a different thread than the caller.
+    ///
+    /// This type carries blanket `Send`/`Sync` impls that assume no raw
+    /// pointers are reachable through it. Setting a callback breaks that
+    /// assumption, so the caller is responsible for ensuring `user_data` is
+    /// itself `Send`/`Sync` if the resulting parameters or context cross a
+    /// thread boundary.
+    #[must_use]
+    pub unsafe fn with_eval_callback(
+        mut self,
+        cb_eval: llama_cpp_sys_2::ggml_backend_sched_eval_callback,
+        user_data: *mut std::ffi::c_void,
+    ) -> Self {
+        self.context_params.cb_eval = cb_eval;
+        self.context_params.cb_eval_user_data = user_data;
+        self
+    }
+
+    /// Get whether an evaluation callback is installed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use llama_cpp_2::context::params::LlamaContextParams;
+    /// let params = LlamaContextParams::default();
+    /// assert!(!params.has_eval_callback());
+    /// ```
+    #[must_use]
+    pub fn has_eval_callback(&self) -> bool {
+        self.context_params.cb_eval.is_some()
+    }
 }
