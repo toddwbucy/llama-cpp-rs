@@ -813,6 +813,46 @@ impl LlamaModel {
         Ok(LlamaModel { model })
     }
 
+    /// Load a model from a set of split files, given explicitly.
+    ///
+    /// llama.cpp resolves a split's siblings from the first file's name only
+    /// when the name carries the `-NNNNN-of-NNNNN` pattern. A caller holding
+    /// the split through descriptors, or through any paths that do not spell
+    /// the pattern, names every part here instead, in split order.
+    ///
+    /// # Errors
+    ///
+    /// See [`LlamaModelLoadError`] for more information.
+    pub fn load_from_splits(
+        _: &LlamaBackend,
+        paths: &[impl AsRef<Path>],
+        params: &LlamaModelParams,
+    ) -> Result<Self, LlamaModelLoadError> {
+        let mut cstrs = Vec::with_capacity(paths.len());
+        for path in paths {
+            let path = path.as_ref();
+            debug_assert!(path.exists(), "{path:?} does not exist");
+            let path = path
+                .to_str()
+                .ok_or_else(|| LlamaModelLoadError::PathToStrError(path.to_path_buf()))?;
+            cstrs.push(CString::new(path)?);
+        }
+        let mut ptrs: Vec<*const std::os::raw::c_char> =
+            cstrs.iter().map(|c| c.as_ptr()).collect();
+        let llama_model = unsafe {
+            llama_cpp_sys_2::llama_model_load_from_splits(
+                ptrs.as_mut_ptr(),
+                ptrs.len(),
+                params.params,
+            )
+        };
+
+        let model = NonNull::new(llama_model).ok_or(LlamaModelLoadError::NullResult)?;
+
+        tracing::debug!(count = paths.len(), "Loaded split model");
+        Ok(LlamaModel { model })
+    }
+
     /// Initializes a lora adapter from a file.
     ///
     /// # Errors
