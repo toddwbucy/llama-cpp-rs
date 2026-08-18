@@ -1104,27 +1104,32 @@ fn main() {
             let asset_clone = asset.clone();
             let filename = asset_clone.file_name().unwrap();
             let filename = filename.to_str().unwrap();
-            let dst = target_dir.join(filename);
-            debug_log!("HARD LINK {} TO {}", asset.display(), dst.display());
-            if !dst.exists() {
-                std::fs::hard_link(asset.clone(), dst).unwrap();
-            }
+            relink(&asset, &target_dir.join(filename));
 
             // Copy DLLs to examples as well
             if target_dir.join("examples").exists() {
-                let dst = target_dir.join("examples").join(filename);
-                debug_log!("HARD LINK {} TO {}", asset.display(), dst.display());
-                if !dst.exists() {
-                    std::fs::hard_link(asset.clone(), dst).unwrap();
-                }
+                relink(&asset, &target_dir.join("examples").join(filename));
             }
 
             // Copy DLLs to target/profile/deps as well for tests
-            let dst = target_dir.join("deps").join(filename);
-            debug_log!("HARD LINK {} TO {}", asset.display(), dst.display());
-            if !dst.exists() {
-                std::fs::hard_link(asset.clone(), dst).unwrap();
-            }
+            relink(&asset, &target_dir.join("deps").join(filename));
         }
+    }
+}
+
+/// Replace `dst` with a hard link to `asset`, tolerating whatever stands
+/// there. The old `if !dst.exists()` guard raced and lied twice over: a
+/// stale link from a previous configuration satisfied it while pointing at
+/// old bytes, and `exists()` follows symlinks while `hard_link` does not,
+/// so a dangling symlink passed the check and then collided with
+/// AlreadyExists. Removing first and ignoring a racing sibling's win makes
+/// the operation idempotent under concurrent builds.
+fn relink(asset: &std::path::Path, dst: &std::path::Path) {
+    debug_log!("HARD LINK {} TO {}", asset.display(), dst.display());
+    let _ = std::fs::remove_file(dst);
+    match std::fs::hard_link(asset, dst) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => panic!("hard link {} to {}: {e}", asset.display(), dst.display()),
     }
 }
