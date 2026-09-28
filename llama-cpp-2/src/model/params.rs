@@ -211,7 +211,7 @@ impl LlamaModelParams {
     ) {
         let kv_override = self
             .kv_overrides
-            .get_mut(0)
+            .last_mut()
             .expect("kv_overrides did not have a next allocated");
 
         assert_eq!(kv_override.key[0], 0, "last kv_override was not empty");
@@ -255,7 +255,7 @@ impl LlamaModelParams {
     pub fn add_cpu_buft_override(mut self: Pin<&mut Self>, key: &CStr) {
         let buft_override = self
             .buft_overrides
-            .get_mut(0)
+            .last_mut()
             .expect("buft_overrides did not have a next allocated");
 
         assert!(
@@ -593,7 +593,66 @@ impl Default for LlamaModelParams {
 
 #[cfg(test)]
 mod tests {
-    use super::LlamaSplitMode;
+    use super::kv_overrides::ParamOverrideValue;
+    use super::{LlamaModelParams, LlamaSplitMode};
+    use std::ffi::CStr;
+    use std::pin::pin;
+
+    #[test]
+    fn tensor_buft_override_appends_on_second_call() {
+        // add_cpu_buft_override is documented as appending. After the first call the
+        // vector is [filled, null-terminator]; writing the second override into the
+        // terminator (then pushing a new one) is what keeps the list null-terminated.
+        let mut params = pin!(LlamaModelParams::default());
+        params
+            .as_mut()
+            .add_cpu_buft_override(c"blk\\.0\\.ffn_(up|down|gate)_(ch|)exps");
+        params
+            .as_mut()
+            .add_cpu_buft_override(c"blk\\.1\\.ffn_(up|down|gate)_(ch|)exps");
+
+        // The fork carries no pattern getter, so the vector is read directly:
+        // two filled entries in call order, then the null terminator.
+        let patterns: Vec<Option<String>> = params
+            .buft_overrides
+            .iter()
+            .map(|entry| {
+                (!entry.pattern.is_null()).then(|| {
+                    // SAFETY: the patterns are the static C string literals above.
+                    unsafe { CStr::from_ptr(entry.pattern) }
+                        .to_string_lossy()
+                        .into_owned()
+                })
+            })
+            .collect();
+        assert_eq!(
+            patterns,
+            vec![
+                Some("blk\\.0\\.ffn_(up|down|gate)_(ch|)exps".to_owned()),
+                Some("blk\\.1\\.ffn_(up|down|gate)_(ch|)exps".to_owned()),
+                None,
+            ],
+        );
+    }
+
+    #[test]
+    fn kv_override_appends_on_second_call() {
+        // Same [filled, null-terminator] layout as the buffer overrides: the second call has to
+        // write into the terminator, not back into slot 0.
+        let mut params = pin!(LlamaModelParams::default());
+        params
+            .as_mut()
+            .append_kv_override(c"first", ParamOverrideValue::Int(1));
+        params
+            .as_mut()
+            .append_kv_override(c"second", ParamOverrideValue::Int(2));
+
+        let kv_overrides = params.kv_overrides().into_iter().collect::<Vec<_>>();
+        assert_eq!(kv_overrides.len(), 2);
+        assert_eq!(kv_overrides[0].0.to_bytes(), b"first");
+        assert_eq!(kv_overrides[1].0.to_bytes(), b"second");
+        assert_eq!(kv_overrides[1].1, ParamOverrideValue::Int(2));
+    }
 
     #[test]
     fn tensor_split_mode_round_trips() {
